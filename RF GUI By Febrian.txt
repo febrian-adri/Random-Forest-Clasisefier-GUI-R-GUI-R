@@ -1,0 +1,177 @@
+library(randomForest)
+library(caret)
+library(dplyr)
+library(ggplot2)
+library(shiny)
+library(shinythemes)
+library(openxlsx)
+library(tree)
+library(reprtree)
+ui <- fluidPage(
+  theme = shinytheme("flatly"),  
+  titlePanel("Analisis Klasifikasi dengan Algoritma Random Forest"),
+  h4("Oleh: Febrian Adri"),
+  navbarPage("MENU",
+             tabPanel("TENTANG GUI",
+                      mainPanel(
+                        tabsetPanel(type = "pills",id = "navbar",
+                                    tabPanel("Topik",
+                                             div( 
+                                               h3(HTML("<center>
+                                                                              APLIKASI GUI R 
+                                                                              <p>Analisis Klasifikasi dengan Algoritma Random Forest</p>
+                                                                      </center>")
+                                               )),
+                                             br(),br(),br(),br(),br(),br(),br(),br(),br(),br(),br(),br(),br(),
+                                             h4(HTML("Febrian Adri
+                                                              <p><em>Copyright 2024</em><p>")),
+                                    ),
+                                    
+                                    tabPanel("Petunjuk Penggunaan",
+                                             h2("Petunjuk Penggunaan Aplikasi"),
+                                             h5("1. Aplikasi GUI ini hanya untuk klasifikasi data menggunakan algoritma Random Forest"),
+                                             h5("2. Format data yang didukung adalah text (.txt) dengan variabel Y berada pada kolom terahir"),
+                                             h5("3. Pastikan data yang akan digunakan adalah data yang telah melewati proses cleaning data, termasuk standarisasi data apabila diperlukan"),
+                                             br(),
+                                             br(),
+                                             value="Petunjuk")
+                        ))),
+             tabPanel("Analisis",
+                      sidebarLayout(
+                        sidebarPanel(
+                          fileInput("data", "Upload Dataset"),
+                          actionButton("analyzeButton", "Analyze")
+                        ),
+                        mainPanel( tabsetPanel(
+                          tabPanel("Feature Importance", 
+                                   plotOutput("featurePlot"),
+                                   tableOutput("feature")),
+                          tabPanel("OOB Error", 
+                                   plotOutput("oobPlot"),
+                                   plotOutput("oobPlot2")),
+                          tabPanel("Evaluasi Model", 
+                                   verbatimTextOutput("confusionTableTrain"),
+                                   tableOutput("evaluationTableTrain"),
+                                   verbatimTextOutput("confusionTableTest"),
+                                   tableOutput("evaluationTableTest")),
+                          tabPanel("Visualisasi Pohon", 
+                                   plotOutput("treePlot"))
+                        ) ))
+             ),
+  )
+)
+
+server <- function(input, output) {
+  
+
+  observeEvent(input$analyzeButton, {
+    set.seed(0) 
+    rf_model <- randomForest(x = x, y = y, ntree = 500, mtry = sqrt(ncol(x)), replace = TRUE)
+    print(rf_model)
+    
+    feature_importances <- data.frame(feature = names(rf_model$importance[, 1]), importance = rf_model$importance[, 1])
+    feature_importances <- feature_importances[order(feature_importances$importance, decreasing = TRUE), ]
+    feature_importances <- feature_importances %>%
+      arrange(desc(importance))
+    
+    output$featurePlot <- renderPlot({
+      feature_importances$feature <- factor(feature_importances$feature, levels = rev(feature_importances$feature))
+      ggplot(data = feature_importances, aes(y = feature, x = importance)) +
+        geom_bar(stat = "identity", fill = "skyblue", color = "black") +
+        labs(title = "Feature Importance Plot",
+             y = "Feature",
+             x = "Importance") +
+        theme(axis.text.y = element_text(hjust = 0, vjust = 0.5))
+    })
+    output$feature <- renderTable({
+      feature_importances
+    })
+    
+    max_features <- c(10, 20, 40, 80, 120, 160)
+    oob_errors <- c()
+    for (i in max_features) {
+      rf_model <- randomForest(formula = y_train ~ ., data = data.frame(x_train, y_train), mtry = i, ntree = 500, replace = TRUE, importance = TRUE)
+      oob_errors <- c(oob_errors, 1 - rf_model$err.rate[nrow(rf_model$err.rate), "OOB"])
+    }
+    output$oobPlot <- renderPlot({
+      plot(max_features, oob_errors, type = "b", pch = 19, col = "blue", xlab = "mtry / max_features", ylab = "OOB Error")
+    })
+    
+    n_estimators <- c(50, 100, 150, 200, 250, 500)
+    oob_errors <- c()
+    for (i in n_estimators) {
+      rf_model <- randomForest(formula = y_train ~ ., data = data_train, ntree = i, replace = TRUE, importance = TRUE)
+      oob_errors <- c(oob_errors, 1 - rf_model$err.rate[nrow(rf_model$err.rate), "OOB"])
+    }
+    output$oobPlot2 <- renderPlot({
+      plot(n_estimators, oob_errors, type = "b", pch = 19, col = "blue", xlab = "Jumlah pohon", ylab = "OOB Error")
+    })
+    
+    param_grid <- expand.grid(
+      expand.grid(.mtry = c(10, 20, 40, 80, 120, 160))
+    )
+    grid_rf <- train(
+      x = x_train,
+      y = y_train,
+      method = "rf",
+      tuneGrid = param_grid,
+      trControl = trainControl(method = "cv", number = 5),
+      metric = "Accuracy"
+    )
+    print(paste("Best Score:", max(grid_rf$results$Accuracy)))
+    hasil_grid_rf <- as.data.frame(grid_rf$results)
+    write.xlsx(hasil_grid_rf, "hasil_grid_rf.xlsx", rowNames = FALSE)
+    
+    predicted_train <- predict(grid_rf, newdata = data_train)
+    conf_matrix_train <- confusionMatrix(predicted_train, y_train)
+    output$confusionTableTrain <- renderPrint({
+      cat("===============================================\n")
+      cat("Confusion matrix Data Train\n")
+      cat("===============================================\n")
+      conf_matrix_train$table
+    })
+    
+    accuracy_train <- conf_matrix_train$overall["Accuracy"]
+    recall_train <- conf_matrix_train$byClass["Recall"]
+    kappa_train <- conf_matrix_train$overall["Kappa"]
+    class_report_train <- conf_matrix_train$byClass
+    output$evaluationTableTrain <- renderTable({
+      data.frame(
+        Accuracy = accuracy_train,
+        Recall = recall_train,
+        Kappa = kappa_train,
+        class_report_train
+      )
+    })
+    
+    predicted_test <- predict(grid_rf, newdata = data_test)
+    conf_matrix_test <- confusionMatrix(predicted_test, y_test)
+    output$confusionTableTest <- renderPrint({
+      cat("===============================================\n")
+      cat("Confusion matrix Data Train\n")
+      cat("===============================================\n")
+      conf_matrix_test$table
+    })
+    
+    accuracy_test <- conf_matrix_test$overall["Accuracy"]
+    recall_test <- conf_matrix_test$byClass["Recall"]
+    kappa_test <- conf_matrix_test$overall["Kappa"]
+    class_report_test <- conf_matrix_test$byClass
+    output$evaluationTableTest <- renderTable({
+      data.frame(
+        Accuracy = accuracy_test,
+        Recall = recall_test,
+        Kappa = kappa_test,
+        class_report_test
+      )
+    })
+    
+    tree <- randomForest::getTree(rf_model, k = 10)
+    output$treePlot <- renderPlot({
+      reprtree:::plot.getTree(rf_model)
+    })
+    
+  })
+}
+
+shinyApp(ui, server)
